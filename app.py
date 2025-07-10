@@ -28,7 +28,6 @@ try:
     SPREADSHEET_NAME = os.environ['SPREADSHEET_NAME']
     ORDER_SHEET_NAME = os.environ['ORDER_SHEET_NAME']
     LOG_SHEET_NAME = os.environ['LOG_SHEET_NAME']
-    VERCEL_URL = os.environ['VERCEL_URL']
     GOOGLE_CREDENTIALS_JSON = os.environ['GOOGLE_CREDENTIALS_JSON']
 except KeyError as e:
     logger.error(f"Environment variable {e} tidak ditemukan!")
@@ -42,7 +41,7 @@ application = Application.builder().token(TELEGRAM_TOKEN).build()
 
 
 # =================================================================
-# FUNGSI PEMBANTU BARU UNTUK KONEKSI GOOGLE SHEETS
+# FUNGSI PEMBANTU UNTUK KONEKSI GOOGLE SHEETS
 # =================================================================
 
 def get_sheets_connection():
@@ -60,7 +59,7 @@ def get_sheets_connection():
         return None
 
 # =================================================================
-# FUNGSI-FUNGSI UTAMA HANDLER (TIDAK ADA PERUBAHAN)
+# FUNGSI-FUNGSI UTAMA HANDLER
 # =================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -161,13 +160,11 @@ def parse_order_message(message: str) -> dict or None:
     return data if all(k in data for k in ['nama', 'kodeBarang', 'alamat', 'resi']) else None
 
 async def cek_resi_sheets(resi: str) -> str:
-    """Mencari data di Google Sheet berdasarkan resi."""
     if not resi:
         return "Format pencarian tidak valid. Gunakan: <code>cari [nomor resi]</code>"
     try:
         spreadsheet = get_sheets_connection()
-        if not spreadsheet:
-            return "Gagal terhubung ke database Google Sheets."
+        if not spreadsheet: return "Gagal terhubung ke database Google Sheets."
         order_sheet = spreadsheet.worksheet(ORDER_SHEET_NAME)
         all_data = order_sheet.get_all_records()
         found_data = None
@@ -195,11 +192,9 @@ async def cek_resi_sheets(resi: str) -> str:
         return f"Terjadi kesalahan saat mencari resi {resi}."
 
 async def input_data_sheets(data: dict) -> str or None:
-    """Memasukkan data order baru ke Google Sheet."""
     try:
         spreadsheet = get_sheets_connection()
-        if not spreadsheet:
-            return None
+        if not spreadsheet: return None
         order_sheet = spreadsheet.worksheet(ORDER_SHEET_NAME)
         last_row_num = len(order_sheet.get_all_values())
         id_order = f"ORD-{last_row_num}"
@@ -216,11 +211,9 @@ async def input_data_sheets(data: dict) -> str or None:
         return None
 
 async def log_to_sheet(log_message: str):
-    """Mencatat pesan log ke dalam Google Sheet."""
     try:
         spreadsheet = get_sheets_connection()
-        if not spreadsheet:
-            return
+        if not spreadsheet: return
         log_sheet = spreadsheet.worksheet(LOG_SHEET_NAME)
         today = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log_sheet.append_row([today, log_message])
@@ -235,20 +228,6 @@ application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("stop", stop))
 application.add_handler(CallbackQueryHandler(button_click))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-async def setup_webhook():
-    webhook_url = f"{VERCEL_URL}/api"
-    await application.bot.set_webhook(url=webhook_url)
-    logger.info(f"Webhook telah diatur ke {webhook_url}")
-
-# Jalankan setup webhook sekali saja
-try:
-    loop = asyncio.get_running_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-loop.run_until_complete(setup_webhook())
 
 @app.route('/api', methods=['POST'])
 def webhook():
