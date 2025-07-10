@@ -28,9 +28,7 @@ try:
     SPREADSHEET_NAME = os.environ['SPREADSHEET_NAME']
     ORDER_SHEET_NAME = os.environ['ORDER_SHEET_NAME']
     LOG_SHEET_NAME = os.environ['LOG_SHEET_NAME']
-    # Variabel untuk URL Vercel (akan diatur di dashboard Vercel)
     VERCEL_URL = os.environ['VERCEL_URL']
-    # Ambil konten JSON kredensial dari environment variable
     GOOGLE_CREDENTIALS_JSON = os.environ['GOOGLE_CREDENTIALS_JSON']
 except KeyError as e:
     logger.error(f"Environment variable {e} tidak ditemukan!")
@@ -39,27 +37,30 @@ except KeyError as e:
 # --- State Management ---
 user_states = {}
 
-# --- Koneksi ke Google Sheets ---
-try:
-    scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets',
-             "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
-    # Membaca kredensial dari variabel lingkungan, bukan file
-    creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
-    spreadsheet = client.open(SPREADSHEET_NAME)
-    order_sheet = spreadsheet.worksheet(ORDER_SHEET_NAME)
-    log_sheet = spreadsheet.worksheet(LOG_SHEET_NAME)
-    logger.info("Berhasil terhubung ke Google Sheets.")
-except Exception as e:
-    logger.error(f"Gagal terhubung ke Google Sheets: {e}")
-    exit()
-
 # --- Inisialisasi Aplikasi Bot ---
 application = Application.builder().token(TELEGRAM_TOKEN).build()
 
+
 # =================================================================
-# FUNGSI-FUNGSI UTAMA HANDLER (TIDAK ADA PERUBAHAN DI BAGIAN INI)
+# FUNGSI PEMBANTU BARU UNTUK KONEKSI GOOGLE SHEETS
+# =================================================================
+
+def get_sheets_connection():
+    """Membuat koneksi ke Google Sheets. Dipanggil hanya saat dibutuhkan."""
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets',
+                 "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
+        creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open(SPREADSHEET_NAME)
+        return spreadsheet
+    except Exception as e:
+        logger.error(f"Gagal membuat koneksi ke Google Sheets: {e}")
+        return None
+
+# =================================================================
+# FUNGSI-FUNGSI UTAMA HANDLER (TIDAK ADA PERUBAHAN)
 # =================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -160,9 +161,14 @@ def parse_order_message(message: str) -> dict or None:
     return data if all(k in data for k in ['nama', 'kodeBarang', 'alamat', 'resi']) else None
 
 async def cek_resi_sheets(resi: str) -> str:
+    """Mencari data di Google Sheet berdasarkan resi."""
     if not resi:
         return "Format pencarian tidak valid. Gunakan: <code>cari [nomor resi]</code>"
     try:
+        spreadsheet = get_sheets_connection()
+        if not spreadsheet:
+            return "Gagal terhubung ke database Google Sheets."
+        order_sheet = spreadsheet.worksheet(ORDER_SHEET_NAME)
         all_data = order_sheet.get_all_records()
         found_data = None
         for row in all_data:
@@ -189,7 +195,12 @@ async def cek_resi_sheets(resi: str) -> str:
         return f"Terjadi kesalahan saat mencari resi {resi}."
 
 async def input_data_sheets(data: dict) -> str or None:
+    """Memasukkan data order baru ke Google Sheet."""
     try:
+        spreadsheet = get_sheets_connection()
+        if not spreadsheet:
+            return None
+        order_sheet = spreadsheet.worksheet(ORDER_SHEET_NAME)
         last_row_num = len(order_sheet.get_all_values())
         id_order = f"ORD-{last_row_num}"
         today = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -205,30 +216,32 @@ async def input_data_sheets(data: dict) -> str or None:
         return None
 
 async def log_to_sheet(log_message: str):
+    """Mencatat pesan log ke dalam Google Sheet."""
     try:
+        spreadsheet = get_sheets_connection()
+        if not spreadsheet:
+            return
+        log_sheet = spreadsheet.worksheet(LOG_SHEET_NAME)
         today = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log_sheet.append_row([today, log_message])
     except Exception as e:
         logger.error(f"Gagal menulis log ke sheet: {e}")
 
 # =================================================================
-# BAGIAN BARU UNTUK VERCEL DEPLOYMENT
+# BAGIAN VERCEL DEPLOYMENT
 # =================================================================
 
-# Tambahkan semua handler ke aplikasi bot
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("stop", stop))
 application.add_handler(CallbackQueryHandler(button_click))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# Fungsi untuk setup webhook saat aplikasi dimulai
 async def setup_webhook():
-    webhook_url = f"{VERCEL_URL}/api" # Vercel biasanya menempatkan fungsi di /api
+    webhook_url = f"{VERCEL_URL}/api"
     await application.bot.set_webhook(url=webhook_url)
     logger.info(f"Webhook telah diatur ke {webhook_url}")
 
 # Jalankan setup webhook sekali saja
-# Menggunakan asyncio.run() untuk menjalankan fungsi async di lingkungan sinkron
 try:
     loop = asyncio.get_running_loop()
 except RuntimeError:
@@ -237,15 +250,12 @@ except RuntimeError:
 
 loop.run_until_complete(setup_webhook())
 
-# Route utama untuk Vercel agar bisa menerima update dari Telegram
 @app.route('/api', methods=['POST'])
 def webhook():
-    # Menggunakan asyncio untuk menjalankan fungsi async dari Flask (lingkungan sync)
     update = Update.de_json(request.get_json(force=True), application.bot)
     asyncio.run(application.process_update(update))
     return 'ok'
 
-# Route tambahan untuk verifikasi bahwa server berjalan
 @app.route('/')
 def index():
     return 'Bot is running!'
